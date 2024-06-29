@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 # @shiweitong 2024/4/12
 import logging
+import os
+import sys
+root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+sys.path.append(root_dir)
 
 import pandas as pd
 from sklearn.metrics import ndcg_score
@@ -29,4 +33,4 @@ if __name__ == '__main__':
 
     config_logging()
 
-    eval_model("submit.xlsx", "../../data/test_y.xlsx")
+    eval_model("submit.xlsx", "data/test_y.xlsx")

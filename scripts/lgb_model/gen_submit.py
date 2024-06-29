@@ -2,8 +2,12 @@
 # @shiweitong 2024/4/12
 
 import pandas as pd
+import os
+import sys
 from lightgbm import LGBMRegressor
 
+root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+sys.path.append(root_dir)
 from config import X
 from spark_learning import timeit
 from spark_learning.utils.models import load_model
@@ -29,4 +33,4 @@ if __name__ == '__main__':
 
     config_logging()
 
-    gen_submit("lgb.dill", "../../data/test_X.xlsx")
+    gen_submit("lgb.dill", "data/test_X.xlsx")
