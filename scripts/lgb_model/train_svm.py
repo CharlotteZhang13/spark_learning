@@ -6,7 +6,11 @@ import sys
 
 import numpy as np
 import pandas as pd
-from lightgbm import LGBMRegressor, early_stopping
+from sklearn.svm import SVR
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder
 from sklearn.metrics import ndcg_score
 from sklearn.model_selection import train_test_split
 
@@ -84,18 +88,16 @@ def train_pheat_demo():
     x_train, y_train = train_ds[X], train_ds[y]  # 预测pheat
     x_eval, y_eval = eval_ds[X], eval_ds[y]
 
-    model = LGBMRegressor(
-        objective='regression',
-        learning_rate=0.009563635398424105,
-        max_depth=9,
-        num_leaves=29,
-        n_estimators=209,
-        verbosity=2,
-        random_state=43
-    )
-    model.fit(x_train, y_train, eval_set=[(x_eval, y_eval)], eval_metric='rmse', callbacks=[
-        early_stopping(stopping_rounds=100),
-    ])
+    categorical_features = ['developer_id', 'developer', 'publisher_id', 'publisher', 'genre', 'sub_genre', 'tag_list']
+    numerical_features = ['wishlist_rank', 'EA_revenue', 'EA_pcu', 'EA_acu', 'average_acu']
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ('num', StandardScaler(), numerical_features),
+            ('cat', OneHotEncoder(), categorical_features)
+        ])
+    model = make_pipeline(preprocessor, SVR(kernel='linear'))
+
+    model.fit(x_train, y_train)
 
     # ------------------ Evaluation ----------------
     train_pred = model.predict(x_train)

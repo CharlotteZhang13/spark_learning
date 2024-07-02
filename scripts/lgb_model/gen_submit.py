@@ -18,6 +18,11 @@ def gen_submit(modelpath, test_x, submit_file="submit.xlsx"):
     model: LGBMRegressor = load_model(modelpath)
 
     df = transform_input_raw(pd.read_excel(test_x), "cat_encoder.dill")
+    # df['average_wishlist_rank'] = df.groupby('edition_id')['wishlist_rank'].transform('mean')
+    df['average_acu'] = df.groupby('edition_id')['EA_acu'].transform('mean')
+    df['date'] = pd.to_datetime(df['date'], format='mixed')
+    df = df.sort_values(by='date')
+    df = df.reset_index(drop=True)
 
     with timeit("predict on test"):
         pred = model.predict(df[X])

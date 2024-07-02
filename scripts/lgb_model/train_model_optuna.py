@@ -1,0 +1,171 @@
+# -*- coding: utf-8 -*-
+# @shiweitong 2024/4/12
+import logging
+import os
+import sys
+
+import numpy as np
+import pandas as pd
+from lightgbm import LGBMRegressor, early_stopping
+from sklearn.metrics import ndcg_score, mean_squared_error
+from sklearn.model_selection import train_test_split
+import optuna
+import functools
+
+root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+sys.path.append(root_dir)
+from spark_learning.CatEncoder import CatEncoder
+from spark_learning.utils.models import save_model
+from config import X, y
+
+
+def transform_input_raw(
+    dataset: pd.DataFrame,
+    encoder: (str, CatEncoder),
+    with_label=True,
+    update_encoder=False,
+):
+    cat_features = [
+        "entity_country",
+        "entity_region",
+        "genre",
+        "sub_genre",
+        "tag_list",
+        "developer_id",
+        "developer",
+        "publisher_id",
+        "publisher",
+    ]
+    if not isinstance(encoder, CatEncoder) and (
+        update_encoder or not os.path.exists(encoder)
+    ):  # 换新的encoder
+        _encoder = CatEncoder()
+        for fea in cat_features:
+            dataset[fea] = _encoder.fit_transform(
+                fea,
+                # dataset[fea]
+                dataset[fea].apply(
+                    lambda x: (
+                        (x.split("|")[0] if "|" in x else x)
+                        if isinstance(x, str)
+                        else x
+                    )
+                ),
+            )
+        _encoder.save(encoder)
+    else:  # 用之前的encoder
+        encoder = CatEncoder.load(encoder) if isinstance(encoder, str) else encoder
+        for fea in cat_features:
+            dataset[fea] = encoder.transform(
+                fea,
+                # dataset[fea]
+                dataset[fea].apply(
+                    lambda x: (
+                        (x.split("|")[0] if "|" in x else x)
+                        if isinstance(x, str)
+                        else x
+                    )
+                ),
+            )
+
+    time_features = [
+        "date",
+    ]
+    for fea in time_features:
+        dataset[fea] = (
+            pd.to_datetime(dataset["release_time"]).dt.tz_localize(None)
+            - pd.to_datetime(dataset[fea])
+        ).dt.days
+
+    return dataset
+
+
+def objective(trial, x_train, y_train, x_eval, y_eval):
+    learning_rate = trial.suggest_loguniform("learning_rate", 1e-4, 1e-1)
+    n_estimators = trial.suggest_int("n_estimators", 100, 600)
+    max_depth = trial.suggest_int("max_depth", 3, 12)
+    num_leaves = trial.suggest_int('num_leaves', 20, 100)
+    # subsample_for_bin = trial.suggest_int('subsample_for_bin', 10000, 300000)
+    # min_split_gain = trial.suggest_float('min_split_gain', 0.0, 1.0)
+    # subsample = trial.suggest_float('subsample', 0.5, 1.0)
+    # subsample_freq = trial.suggest_int('subsample_freq', 0, 10)
+    # reg_lambda = trial.suggest_float('reg_lambda', 0.0, 10.0)
+    # reg_alpha = trial.suggest_float('reg_alpha', 0.0, 10.0)
+
+    model = LGBMRegressor(
+        objective='regression',
+        learning_rate=learning_rate,
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        num_leaves=num_leaves,
+        random_state=43
+    )
+    model.fit(
+        x_train,
+        y_train,
+        eval_set=[(x_eval, y_eval)],
+        eval_metric="rmse",
+        callbacks=[
+            early_stopping(stopping_rounds=100),
+        ])
+
+    train_pred = model.predict(x_train)
+    eval_pred = model.predict(x_eval)
+    # rmse = mean_squared_error(y_eval, eval_pred, squared=False)
+    logging.info({
+        "ndcg_score_train": ndcg_score(np.expand_dims(y_train, 0), np.expand_dims(train_pred, 0)),
+        "ndcg_score_eval": ndcg_score(np.expand_dims(y_eval, 0), np.expand_dims(eval_pred, 0)),
+    })
+    save_model(model, "lgb.dill")
+
+    return ndcg_score(np.expand_dims(y_eval, 0), np.expand_dims(eval_pred, 0))
+
+
+def train_pheat_demo():
+    logging.info("loading training data")
+    dataset = pd.read_excel("data/train.xlsx")
+
+    # 把非数字信息转换为序号标签
+    dataset = transform_input_raw(dataset, "cat_encoder.dill", update_encoder=True)
+
+    main_dataset = dataset[~dataset["wishlist_rank"].isna()]  # 有ranking的数据行
+    supplement_dataset = dataset[dataset["wishlist_rank"].isna()]  # 无ranking的数据行
+    main_games = main_dataset["edition_id"].unique()  # 有ranking的游戏
+    supplement_games = supplement_dataset["edition_id"].unique()  # 无ranking的游戏
+
+    logging.info(
+        f"main games: {len(main_games)}; supplement games: {len(supplement_games)}"
+    )
+    games_train, games_test = train_test_split(
+        np.concatenate([main_games, supplement_games]),
+        stratify=[0] * len(main_games)
+        + [1]
+        * len(supplement_games),  # 保证train test里面有无ranking的游戏比例是一样的
+        test_size=0.1,
+        random_state=43,
+    )
+    logging.info(
+        f"games for train: {len(games_train)}, games for test: {len(games_test)}"
+    )
+
+    train_ds = dataset[
+        dataset["edition_id"].isin(games_train)
+    ]  # train test的游戏都加上数据
+    eval_ds = dataset[dataset["edition_id"].isin(games_test)]
+
+    logging.info(f"Train: {len(train_ds)}, Eval {len(eval_ds)}")
+
+    x_train, y_train = train_ds[X], train_ds[y]  # 预测pheat
+    x_eval, y_eval = eval_ds[X], eval_ds[y]
+
+    study = optuna.create_study(direction='maximize')
+    objective_args = functools.partial(objective, x_train=x_train, y_train=y_train, x_eval=x_eval, y_eval=y_eval)
+    study.optimize(objective_args, n_trials=50, show_progress_bar=True)
+
+
+if __name__ == "__main__":
+    from spark_learning.utils import config_logging
+
+    config_logging()
+
+    train_pheat_demo()
